@@ -1,10 +1,12 @@
 from contextlib import contextmanager
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.database import get_db
 from app.models.schemas import OpeningsResponse, PlayerProfile, WrappedStats
-from app.services import aggregator, lichess
+from app.services import aggregator, cache, lichess
 
 router = APIRouter(prefix="/api/v1", tags=["stats"])
 
@@ -38,10 +40,16 @@ async def get_player(username: str):
 
 
 @router.get("/wrapped/{username}", response_model=WrappedStats)
-async def get_wrapped(username: str):
+async def get_wrapped(username: str, db: AsyncSession = Depends(get_db)):
+    cached = await cache.get_cached(db, username)
+    if cached is not None:
+        return cached
+
     with lichess_errors():
         games = await lichess.get_recent_games(username, max_games=MAX_GAMES)
-    return aggregator.compute_wrapped(games, username)
+    stats = aggregator.compute_wrapped(games, username)
+    await cache.set_cached(db, username, stats)
+    return stats
 
 
 @router.get("/openings/{username}", response_model=OpeningsResponse)
